@@ -8,7 +8,8 @@ Remdisはテキスト・音声・マルチモーダル対話システム開発�
 Remdis is a platform for developing multimodal dialogue systems. 
 This page provides the necessary information for using Remdis.
 
-※ **[You can find the English description here.](https://github.com/remdis/remdis/blob/master/README-en.md)**
+※ **[You can find the English description here.](https://github.com/remdis/remdis/blob/master/README-en.md)**  
+※ **[English version is released!](https://github.com/remdis/remdis-en)**
 
 ## 特徴
 - 非同期処理に基づくモジュールベースの対話システム
