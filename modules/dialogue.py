@@ -5,7 +5,8 @@ import time
 import re
 
 from base import RemdisModule, RemdisState, RemdisUtil, RemdisUpdateType
-from llm import ResponseChatGPT
+#from llm import ResponseChatGPT
+from llm import ResponseHuggingFace
 import prompt.util as prompt_util
 
 
@@ -99,7 +100,7 @@ class Dialogue(RemdisModule):
             # IUを受信して保存
             input_iu = self.input_iu_buffer.get()
             iu_memory.append(input_iu)
-            
+
             # IUがREVOKEだった場合はメモリから削除
             if input_iu['update_type'] == RemdisUpdateType.REVOKE:
                 iu_memory = self.util_func.remove_revoked_ius(iu_memory)
@@ -118,16 +119,24 @@ class Dialogue(RemdisModule):
                         new_iu_count = 0
 
                 # パラレルな応答生成処理
-                # 応答がはじまったらLLM自体がbufferに格納される
-                llm = ResponseChatGPT(self.config, self.prompts)
+                llm = ResponseHuggingFace(self.config, self.prompts)  
                 last_asr_iu_id = input_iu['id']
+
+                # プロンプトを構築
+                prompt = llm.build_prompt(self.dialogue_history, user_utterance)
+            
+                # デバッグ用にプロンプトと対話ログを出力
+                print(f"DEBUG: Sending prompt to LLM:\n{prompt}")
+                print(f"DEBUG: Current dialogue history:\n{self.dialogue_history}")
+
+                # スレッドで応答生成を実行
                 t = threading.Thread(
                     target=llm.run,
                     args=(input_iu['timestamp'],
                           user_utterance,
-                          self.dialogue_history,
-                          last_asr_iu_id,
-                          self.llm_buffer)
+                        self.dialogue_history,
+                        last_asr_iu_id,
+                        self.llm_buffer)
                 )
                 t.start()
 
@@ -193,7 +202,7 @@ class Dialogue(RemdisModule):
             # 一瞬スリープしてそれでも応答生成中にならなければシステムから発話を開始
             time.sleep(0.1)
             if self.llm_buffer.empty():
-                llm = ResponseChatGPT(self.config, self.prompts)
+                llm = ResponseHuggingFace(self.config, self.prompts) 
                 t = threading.Thread(
                     target=llm.run,
                     args=(time.time(),
@@ -204,19 +213,36 @@ class Dialogue(RemdisModule):
                 )
                 t.start()
 
+        if self.llm_buffer.empty():
+            print("LLM buffer is still empty.")  # デバッグ用ログ
+            return
+
         # 応答が生成され始めたLLMの中で一番新しい音声認識結果を使っているものを選択して送信
         selected_llm = self.llm_buffer.get()
-        latest_asr_time = selected_llm.asr_time
+
+        print(f"Selected LLM response: {selected_llm}")  # デバッグ用ログ
+
+        if selected_llm["response"] is not None:
+            conc_response = ''
+            for part in selected_llm["response"]:
+                if 'phrase' in part:
+                    print(f"Sending phrase: {part['phrase']}")  # デバッグ用ログ
+                    conc_response += part['phrase']
+            self.history_management('assistant', conc_response)
+        else:
+            print("No response generated.")  # デバッグ用ログ
+
+        latest_asr_time = selected_llm["asr_time"]
         while not self.llm_buffer.empty():
             llm = self.llm_buffer.get()
-            if llm.asr_time > latest_asr_time:
+            if llm["asr_time"] > latest_asr_time:
                 selected_llm = llm
 
         # IUに分割して送信
-        sys.stderr.write('Resp: Selected user utterance: %s\n' % (selected_llm.user_utterance))
-        if selected_llm.response is not None:
+        sys.stderr.write('Resp: Selected user utterance: %s\n' % (selected_llm["user_utterance"]))
+        if selected_llm["response"] is not None:
             conc_response = ''
-            for part in selected_llm.response:
+            for part in selected_llm["response"]:
                 # 表情・動作を送信
                 expression_and_action = {}
                 if 'expression' in part and part['expression'] != 'normal':
@@ -240,8 +266,8 @@ class Dialogue(RemdisModule):
                         conc_response += part['phrase']
 
             # 対話コンテキストにユーザ発話を追加
-            if selected_llm.user_utterance:
-                self.history_management('user', selected_llm.user_utterance)
+            if selected_llm["user_utterance"]:  # 修正
+                self.history_management('user', selected_llm["user_utterance"])  # 修正
             else:
                 self.history_management('user', '(沈黙)')
             self.history_management('assistant', conc_response)

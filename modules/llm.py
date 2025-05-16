@@ -7,6 +7,7 @@ import string
 import openai
 
 from base import MMDAgentEXLabel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 class ResponseGenerator:
@@ -123,7 +124,7 @@ class ResponseGenerator:
         print(f"[{time.time():.5f}]", *args, flush=True, **kwargs)
 
 
-class ResponseChatGPT():
+'''class ResponseChatGPT():
     def __init__(self, config, prompts):
         self.config = config
         self.prompts = prompts
@@ -148,7 +149,40 @@ class ResponseChatGPT():
 
         # 自身をDialogueモジュールが持つLLMバッファに追加
         parent_llm_buffer.put(self)
+'''
 
+class ResponseHuggingFace:
+    def __init__(self, config, prompts):
+        self.model_name = config['HuggingFace']['model_name']
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, is_decoder=True)
+        self.prompts = prompts
+
+    def run(self, timestamp, user_utterance, dialogue_history, last_asr_iu_id, llm_buffer):
+        # 対話履歴をプロンプトとして構築
+        prompt = self.build_prompt(dialogue_history, user_utterance)
+        print(f"Generated prompt: {prompt}")  # デバッグ用ログ
+
+        # モデルに入力をトークナイズ
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+    
+        # 応答を生成
+        outputs = self.model.generate(inputs["input_ids"], max_length=150, num_return_sequences=1)
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"Generated response: {response}")  # デバッグ用ログ
+
+        # 結果をバッファに格納
+        llm_buffer.put({
+            "timestamp": timestamp,
+            "user_utterance": user_utterance,
+            "response": [{"phrase": response}],
+            "asr_time": timestamp
+        })
+
+    def build_prompt(self, dialogue_history, user_utterance):
+        # 対話履歴をプロンプト形式に変換
+        history = "\n".join([f"{item['role']}: {item['content']}" for item in dialogue_history])
+        return f"{history}\nuser: {user_utterance}\nassistant:"
 
 if __name__ == "__main__":
     openai.api_key = '<enter your API key>'

@@ -19,7 +19,7 @@ VAP:
 DIALOGUE:
  history_length: 5
  response_generation_timeout: 3.0 # sec
- response_generation_interval: 3
+ response_generation_interval: 1
  max_silence_time: 5.0 # sec
 
 ChatGPT:
@@ -32,6 +32,9 @@ ChatGPT:
   BC: prompt/text_vap.txt
   RESP: prompt/response.txt
   TO: prompt/time_out.txt
+
+HuggingFace:
+  model_name: "tohoku-nlp/bert-base-japanese-whole-word-masking"  # 使用するモデル名（例: GPT-2）
 
 TEXT_VAP:
  max_verbal_backchannel_num: 2
