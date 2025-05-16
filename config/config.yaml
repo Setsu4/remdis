@@ -34,7 +34,7 @@ ChatGPT:
   TO: prompt/time_out.txt
 
 HuggingFace:
-  model_name: "tohoku-nlp/bert-base-japanese-whole-word-masking"  # 使用するモデル名（例: GPT-2）
+  model_name: "cyberagent/open-calm-3b"  # 使用するモデル名（例: GPT-2）
 
 TEXT_VAP:
  max_verbal_backchannel_num: 2

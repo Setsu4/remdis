@@ -6,6 +6,8 @@ import string
 
 import openai
 
+import torch
+
 from base import MMDAgentEXLabel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -155,7 +157,8 @@ class ResponseHuggingFace:
     def __init__(self, config, prompts):
         self.model_name = config['HuggingFace']['model_name']
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(self.model_name, is_decoder=True)
+        self.tokenizer.pad_token = self.tokenizer.eos_token  # pad_token_idをeos_token_idに設定
+        self.model = AutoModelForCausalLM.from_pretrained(self.model_name)
         self.prompts = prompts
 
     def run(self, timestamp, user_utterance, dialogue_history, last_asr_iu_id, llm_buffer):
@@ -164,10 +167,15 @@ class ResponseHuggingFace:
         print(f"Generated prompt: {prompt}")  # デバッグ用ログ
 
         # モデルに入力をトークナイズ
-        inputs = self.tokenizer(prompt, return_tensors="pt")
+        inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
     
         # 応答を生成
-        outputs = self.model.generate(inputs["input_ids"], max_length=150, num_return_sequences=1)
+        outputs = self.model.generate(
+            inputs["input_ids"], 
+            attention_mask=inputs["attention_mask"], 
+            max_length=150, 
+            num_return_sequences=1
+        )
         response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"Generated response: {response}")  # デバッグ用ログ
 
