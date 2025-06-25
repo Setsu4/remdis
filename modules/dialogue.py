@@ -91,34 +91,22 @@ class Dialogue(RemdisModule):
 
     # 随時受信される音声認識結果に対して並列に応答を生成
     def parallel_response_generation(self):
-        # 受信したIUを保持しておく変数
         iu_memory = []
-        new_iu_count = 0
-
         while True:
-            # IUを受信して保存
             input_iu = self.input_iu_buffer.get()
             iu_memory.append(input_iu)
-            
+
             # IUがREVOKEだった場合はメモリから削除
             if input_iu['update_type'] == RemdisUpdateType.REVOKE:
                 iu_memory = self.util_func.remove_revoked_ius(iu_memory)
-            # ADD/COMMITの場合は応答候補生成
-            else:
+            # COMMITの場合のみ応答生成
+            elif input_iu['update_type'] == RemdisUpdateType.COMMIT:
                 user_utterance = self.util_func.concat_ius_body(iu_memory)
                 if user_utterance == '':
+                    iu_memory = []
                     continue
 
-                # ADDの場合は閾値以上のIUが溜まっているか確認し，溜まっていなければ次のIUもしくはCOMMITを待つ
-                if input_iu['update_type'] == RemdisUpdateType.ADD:
-                    new_iu_count += 1
-                    if new_iu_count < self.response_generation_interval:
-                        continue
-                    else:
-                        new_iu_count = 0
-
-                # パラレルな応答生成処理
-                # 応答がはじまったらLLM自体がbufferに格納される
+                # 応答生成処理
                 llm = ResponseChatGPT(self.config, self.prompts)
                 last_asr_iu_id = input_iu['id']
                 t = threading.Thread(
@@ -131,37 +119,21 @@ class Dialogue(RemdisModule):
                 )
                 t.start()
 
-                # ユーザ発話終端の処理
-                if input_iu['update_type'] == RemdisUpdateType.COMMIT:
-                    # ASR_COMMITはユーザ発話が前のシステム発話より時間的に後になる場合だけ発出
-                    if self.system_utterance_end_time < input_iu['timestamp']:
-                        self.event_queue.put('ASR_COMMIT')
-                    iu_memory = []
+                # ASR_COMMITはユーザ発話が前のシステム発話より時間的に後になる場合だけ発出
+                if self.system_utterance_end_time < input_iu['timestamp']:
+                    self.event_queue.put('ASR_COMMIT')
+                iu_memory = []
 
     # 対話状態を管理
     def state_management(self):
         while True:
-            # イベントに応じて状態を遷移
             event = self.event_queue.get()
             prev_state = self.state
             self.state = RemdisState.transition[self.state][event]
             self.log(f'********** State: {prev_state} -> {self.state}, Trigger: {event} **********')
-            
-            # 直前の状態がtalkingの場合にイベントに応じて処理を実行
-            if prev_state == 'talking':
-                if event == 'SYSTEM_BACKCHANNEL':
-                    pass
-                if event == 'USER_BACKCHANNEL':
-                    pass
-                if event == 'USER_TAKE_TURN':
-                    self.stop_response()
-                if event == 'BOTH_TAKE_TURN':
-                    self.stop_response()
-                if event == 'TTS_COMMIT':
-                    self.stop_response()
-                
-            # 直前の状態がidleの場合にイベントに応じて処理を実行
-            elif prev_state == 'idle':
+
+            # idle状態でのみASR_COMMITやSYSTEM_TAKE_TURNで応答生成
+            if prev_state == 'idle':
                 if event == 'SYSTEM_BACKCHANNEL':
                     self.send_backchannel()
                 if event == 'SYSTEM_TAKE_TURN':
