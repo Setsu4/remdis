@@ -40,6 +40,9 @@ class Dialogue(RemdisModule):
         # IU処理用の関数
         self.util_func = RemdisUtil()
 
+        self.waiting_for_keyword = True
+        self.start_keyword = "どんなニュースがある"
+
     # メインループ
     def run(self):
         # 音声認識結果受信スレッド
@@ -106,8 +109,19 @@ class Dialogue(RemdisModule):
                     iu_memory = []
                     continue
 
-                # 応答生成処理
-                llm = ResponseChatGPT(self.config, self.prompts)
+                # --- ここでキーワード検出 ---
+                if self.waiting_for_keyword:
+                    if self.start_keyword in user_utterance:
+                        self.waiting_for_keyword = False
+                        self.log("ニュース伝達モードを開始します。")
+                        # 必要ならここで「ニュースをお伝えします」などの初期応答を生成
+                    else:
+                        self.log("開始キーワード待機中: 入力無視")
+                        iu_memory = []
+                        continue  # キーワード検出までは無視
+
+                # 通常の応答生成処理
+                llm = ResponseChatGPT(self.config, self.prompts, news_path="../config/news.txt")
                 last_asr_iu_id = input_iu['id']
                 t = threading.Thread(
                     target=llm.run,
