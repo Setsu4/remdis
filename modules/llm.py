@@ -10,7 +10,7 @@ from base import MMDAgentEXLabel
 
 
 class ResponseGenerator:
-    def __init__(self, config, asr_timestamp, query, dialogue_history, prompts):
+    def __init__(self, config, asr_timestamp, query, dialogue_history, prompts, news_content=""):
         # 設定の読み込み
         self.max_tokens = config['ChatGPT']['max_tokens']
         self.max_message_num_in_context = config['ChatGPT']['max_message_num_in_context']
@@ -28,6 +28,10 @@ class ResponseGenerator:
 
         # ChatGPTに入力する対話文脈
         messages = []
+
+        # ニュース記事をsystemメッセージとして追加
+        if news_content:
+            messages.append({"role": "system", "content": f"以下は最新のニュース記事です:\n{news_content}"})
 
         # 過去の対話履歴を対話文脈に追加
         i = max(0, len(self.dialogue_history) - self.max_message_num_in_context)
@@ -124,7 +128,7 @@ class ResponseGenerator:
 
 
 class ResponseChatGPT():
-    def __init__(self, config, prompts):
+    def __init__(self, config, prompts, news_path=None):
         self.config = config
         self.prompts = prompts
 
@@ -143,10 +147,8 @@ class ResponseChatGPT():
         self.last_asr_iu_id = last_asr_iu_id
         self.asr_time = asr_timestamp
 
-        # ChataGPTを呼び出して応答の生成を開始
-        self.response = ResponseGenerator(self.config, asr_timestamp, user_utterance, dialogue_history, self.prompts)
-
-        # 自身をDialogueモジュールが持つLLMバッファに追加
+        # ResponseGeneratorにnews_contentを渡す
+        self.response = ResponseGenerator(self.config, asr_timestamp, user_utterance, dialogue_history, self.prompts, news_content=self.news_content)
         parent_llm_buffer.put(self)
 
 
