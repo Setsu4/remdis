@@ -135,6 +135,16 @@ class ResponseChatGPT():
         # 設定の読み込み
         openai.api_key = config['ChatGPT']['api_key']
 
+        # ニュース記事の内容を読み込み
+        self.news_content = ""
+        if news_path is not None:
+            try:
+                with open(news_path, encoding="utf-8") as f:
+                    self.news_content = f.read()
+            except FileNotFoundError:
+                print(f"Warning: News file {news_path} not found. Using empty news content.")
+                self.news_content = ""
+
         # 入力されたユーザ発話に関する情報を保持する変数
         self.user_utterance = ''
         self.response = ''
