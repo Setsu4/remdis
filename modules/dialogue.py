@@ -121,7 +121,7 @@ class Dialogue(RemdisModule):
                         continue  # キーワード検出までは無視
 
                 # 通常の応答生成処理
-                llm = ResponseChatGPT(self.config, self.prompts, news_path="../config/news.txt")
+                llm = ResponseChatGPT(self.config, self.prompts, news_path="../news/news.txt")
                 last_asr_iu_id = input_iu['id']
                 t = threading.Thread(
                     target=llm.run,
