@@ -25,13 +25,15 @@ DIALOGUE:
 ChatGPT:
  api_key: "key"
  max_tokens: 128
+ summary_max_tokens: 32768  # ニュース要約生成用のmax_tokens
  max_message_num_in_context: 4
- response_generation_model: "gpt-4.1-nano-2025-04-14" # "gpt-3.5-turbo", "gpt-4o-mini", "gpt-4"
+ response_generation_model: "gpt-4.1-nano-2025-04-14"  # "gpt-3.5-turbo", "gpt-4o-mini", "gpt-4","gpt-4.1-nano-2025-04-14","gpt-4.1-mini-2025-04-14"
  text_vap_model: "gpt-4.1-nano-2025-04-14"
  prompts:
   BC: ../prompt/text_vap.txt
   RESP: ../prompt/response.txt
   TO: ../prompt/time_out.txt
+  NEWS_SUMMARY: ../prompt/news_summary.txt
 
 TEXT_VAP:
  max_verbal_backchannel_num: 2
