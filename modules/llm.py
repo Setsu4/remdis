@@ -10,7 +10,7 @@ from base import MMDAgentEXLabel
 
 
 class ResponseGenerator:
-    def __init__(self, config, asr_timestamp, query, dialogue_history, prompts, news_content=""):
+    def __init__(self, config, asr_timestamp, query, dialogue_history, prompts, news_content="", current_summary_sentence=None):
         # 設定の読み込み
         self.max_tokens = config['ChatGPT']['max_tokens']
         self.max_message_num_in_context = config['ChatGPT']['max_message_num_in_context']
@@ -21,47 +21,67 @@ class ResponseGenerator:
         self.query = query
         self.dialogue_history = dialogue_history
         self.prompts = prompts
+        self.current_summary_sentence = current_summary_sentence
 
         # 生成中の応答を保持・パースする変数
         self.response_fragment = ''
         self.punctuation_pattern = re.compile('[、。！？]')
 
-        # ChatGPTに入力する対話文脈
-        messages = []
-
-        # ニュース記事をsystemメッセージとして追加
-        if news_content:
-            messages.append({"role": "system", "content": f"以下は最新のニュース記事です:\n{news_content}"})
-
-        # 過去の対話履歴を対話文脈に追加
-        i = max(0, len(self.dialogue_history) - self.max_message_num_in_context)
-        messages.extend(self.dialogue_history[i:])
-
-        # プロンプトおよび新しいユーザ発話を対話文脈に追加
-        if query:
-            messages.extend([
-                {'role': 'user', 'content': self.prompts['RESP']},
-                {'role': 'system', 'content': "OK"},
-                {'role': 'user', 'content': query}
-            ])
-        # 新しいユーザ発話が存在せず自ら発話する場合のプロンプトを対話文脈に追加
+        # システム発話（ユーザ発話なし）なら要約文をそのまま返す
+        if query is None and current_summary_sentence is not None:
+            self.response = [ {"phrase": current_summary_sentence} ]
+            self._response_iter = iter(self.response)
+            self._use_summary_only = True
         else:
-            messages.extend([
-                {'role': 'user', 'content': prompts['TO']}
-            ])
+            # ChatGPTに入力する対話文脈
+            messages = []
 
-        self.log(f"Call ChatGPT: {query=}")
+            # 今から発話する文だけをsystemメッセージとして追加
+            if self.current_summary_sentence:
+                messages.append({"role": "system", "content": f"発話テキスト：{self.current_summary_sentence}"})
+            # response.txtのプロンプトをuserメッセージとして追加
+            messages.append({"role": "user", "content": self.prompts['RESP']})
 
-        # ChatGPTに対話文脈を入力してストリーミング形式で応答の生成を開始
-        self.response = openai.ChatCompletion.create(
-            model=self.model,
-            messages=messages,
-            max_tokens=self.max_tokens,
-            stream=True
-        )
-    
+            # ニュース記事をsystemメッセージとして追加
+            if news_content:
+                messages.append({"role": "system", "content": f"以下は最新のニュース記事です:\n{news_content}"})
+
+            # 過去の対話履歴を対話文脈に追加
+            i = max(0, len(self.dialogue_history) - self.max_message_num_in_context)
+            messages.extend(self.dialogue_history[i:])
+
+            # プロンプトおよび新しいユーザ発話を対話文脈に追加
+            if query:
+                messages.extend([
+                    {'role': 'user', 'content': self.prompts['RESP']},
+                    {'role': 'system', 'content': "OK"},
+                    {'role': 'user', 'content': query}
+                ])
+            # 新しいユーザ発話が存在せず自ら発話する場合のプロンプトを対話文脈に追加
+            else:
+                messages.extend([
+                    {'role': 'user', 'content': prompts['TO']}
+                ])
+
+            self.log(f"Call ChatGPT: {query=}")
+
+            # ChatGPTに対話文脈を入力してストリーミング形式で応答の生成を開始
+            self.response = openai.ChatCompletion.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=self.max_tokens,
+                stream=True
+            )
+            self._use_summary_only = False
+
     # Dialogueのsend_response関数で呼び出され，応答の断片を順次返す
     def __next__(self):
+        if hasattr(self, '_use_summary_only') and self._use_summary_only:
+            try:
+                return next(self._response_iter)
+            except StopIteration:
+                raise StopIteration
+
         # 引数（例: '1_喜び,6_会釈'）をパースして，expressionとactionを取得
         def _parse_split(split):
             expression = MMDAgentEXLabel.id2expression[0]
