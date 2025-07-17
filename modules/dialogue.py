@@ -52,6 +52,13 @@ class Dialogue(RemdisModule):
         self.summary_index = 0
         self.load_summary_sentences()
 
+        # ニュース自動要約モード中かどうか
+        self.in_auto_summary = False  # 自動要約モードフラグ
+        self.auto_summary_thread = None  # 自動要約スレッド
+        self.last_user_utterance_time = 0  # 最後のユーザ発話時刻
+        # ループ用スレッド
+        self.auto_summary_thread = None
+
     def load_summary_sentences(self):
         """要約文を分割してリストとして保持"""
         generator = SummaryGenerator(self.config, self.prompts)
@@ -59,20 +66,37 @@ class Dialogue(RemdisModule):
         self.summary_index = 0
 
     def speak_next_summary(self):
-        """次の要約文をインデックス付きで発話"""
+        """次の要約文を一文ずつ発話（番号なし）"""
         if not self.summary_sentences:
-            self.log("No summary sentences loaded.")
+            self.in_auto_summary = False
             return
         if self.summary_index >= len(self.summary_sentences):
-            self.log("All summary sentences have been spoken.")
+            self.in_auto_summary = False
             return
-        total = len(self.summary_sentences)
-        idx = self.summary_index + 1
-        text = f"[{idx}/{total}] {self.summary_sentences[self.summary_index]}。"
+        text = f"{self.summary_sentences[self.summary_index]}。"
         snd_iu = self.createIU(text, 'dialogue', RemdisUpdateType.ADD)
         self.printIU(snd_iu)
         self.publish(snd_iu, 'dialogue')
         self.summary_index += 1
+        # 2文目以降も自動要約モードを維持
+        self.in_auto_summary = True
+
+    def auto_summary_loop(self):
+        """TTS終了後、インターバル待機し、ユーザ発話なければ次の要約文を発話"""
+        interval = self.config['DIALOGUE'].get('system_response_interval', 5.0)
+        while self.in_auto_summary and self.summary_index < len(self.summary_sentences):
+            # インターバル待機
+            start = time.time()
+            while time.time() - start < interval:
+                if not self.in_auto_summary:
+                    return  # ユーザ発話で中断
+                time.sleep(0.1)
+            # インターバル後、ユーザ発話なければ次の要約文
+            if self.in_auto_summary:
+                self.speak_next_summary()
+            else:
+                break
+        self.in_auto_summary = False
 
     # メインループ
     def run(self):
@@ -114,6 +138,32 @@ class Dialogue(RemdisModule):
         t7.start()
         t8.start()
 
+    def callback_tts(self, ch, method, properties, in_msg):
+        in_msg = self.parse_msg(in_msg)
+        self.printIU(in_msg)
+        # TTS_COMMIT受信時に自動要約モードなら次文発話ループ開始
+        if in_msg['update_type'] == RemdisUpdateType.COMMIT and self.in_auto_summary:
+            if self.auto_summary_thread is None or not self.auto_summary_thread.is_alive():
+                self.auto_summary_thread = threading.Thread(target=self.auto_summary_loop)
+                self.auto_summary_thread.start()
+
+    def auto_summary_loop(self):
+        """TTS終了後、インターバル待機し、ユーザ発話なければ次の要約文を発話"""
+        interval = self.config['DIALOGUE'].get('system_response_interval', 5.0)
+        while self.in_auto_summary and self.summary_index < len(self.summary_sentences):
+            # インターバル待機
+            start = time.time()
+            while time.time() - start < interval:
+                if not self.in_auto_summary:
+                    return  # ユーザ発話で中断
+                time.sleep(0.1)
+            # インターバル後、ユーザ発話なければ次の要約文
+            if self.in_auto_summary:
+                self.speak_next_summary()
+            else:
+                break
+        self.in_auto_summary = False
+
     # 音声認識結果受信スレッド
     def listen_asr_loop(self):
         self.subscribe('asr', self.callback_asr)
@@ -140,28 +190,30 @@ class Dialogue(RemdisModule):
         while True:
             input_iu = self.input_iu_buffer.get()
             iu_memory.append(input_iu)
-
-            # IUがREVOKEだった場合はメモリから削除
             if input_iu['update_type'] == RemdisUpdateType.REVOKE:
                 iu_memory = self.util_func.remove_revoked_ius(iu_memory)
-            # COMMITの場合のみ応答生成
             elif input_iu['update_type'] == RemdisUpdateType.COMMIT:
                 user_utterance = self.util_func.concat_ius_body(iu_memory)
                 if user_utterance == '':
                     iu_memory = []
                     continue
-
                 # --- ここでキーワード検出 ---
                 if self.waiting_for_keyword:
                     if self.start_keyword in user_utterance:
                         self.waiting_for_keyword = False
-                        self.log("ニュース伝達モードを開始します。")
-                        # 必要ならここで「ニュースをお伝えします」などの初期応答を生成
+                        self.log("ニュース伝達モードを開始します。要約文をすぐ発話します。")
+                        self.summary_index = 0
+                        self.in_auto_summary = True
+                        self.speak_next_summary()  # 最初の要約文を即時発話
+                        iu_memory = []
+                        continue  # ← ここで通常応答生成をスキップ
                     else:
                         self.log("開始キーワード待機中: 入力無視")
                         iu_memory = []
-                        continue  # キーワード検出までは無視
-
+                        continue
+                # ユーザ発話があれば自動要約モードを中断
+                if self.in_auto_summary:
+                    self.in_auto_summary = False
                 # 通常の応答生成処理
                 llm = ResponseChatGPT(self.config, self.prompts, news_path="../news/news.txt")
                 last_asr_iu_id = input_iu['id']
@@ -309,10 +361,12 @@ class Dialogue(RemdisModule):
     # 音声合成結果受信用のコールバック
     def callback_tts(self, ch, method, properties, in_msg):
         in_msg = self.parse_msg(in_msg)
-        if in_msg['update_type'] == RemdisUpdateType.COMMIT:
-            self.output_iu_buffer = []
-            self.system_utterance_end_time = in_msg['timestamp']
-            self.event_queue.put('TTS_COMMIT')
+        # self.printIU(in_msg)
+        # TTS_COMMIT受信時に自動要約モードなら次文発話ループ開始
+        if in_msg['update_type'] == RemdisUpdateType.COMMIT and self.in_auto_summary:
+            if self.auto_summary_thread is None or not self.auto_summary_thread.is_alive():
+                self.auto_summary_thread = threading.Thread(target=self.auto_summary_loop)
+                self.auto_summary_thread.start()
 
     # VAP情報受信用のコールバック
     def callback_vap(self, ch, method, properties, in_msg):

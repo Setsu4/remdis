@@ -21,6 +21,7 @@ DIALOGUE:
  response_generation_timeout: 3.0 # sec
  response_generation_interval: 3
  max_silence_time: 5.0 # sec
+ system_response_interval: 5.0 # sec ユーザ反応がなければ次の要約文を発話する間隔
 
 ChatGPT:
  api_key: "key"
