@@ -39,9 +39,17 @@ class Dialogue(RemdisModule):
 
         # IU処理用の関数
         self.util_func = RemdisUtil()
+        # ニュース伝達開始合図待ちフラグ
+        self.waiting_for_keyword = True
 
     # メインループ
     def run(self):
+        # システム起動時に準備完了メッセージを発話
+        self.log(f"waiting_for_keyword={self.waiting_for_keyword}")
+        self.publish(self.createIU(
+            "対話の準備が完了しました．対話の開始合図をお願いします．合図はどんなニュースがある，です．",
+            'dialogue', RemdisUpdateType.ADD), 'dialogue')
+
         # 音声認識結果受信スレッド
         t1 = threading.Thread(target=self.listen_asr_loop)
         # 音声合成結果受信スレッド
@@ -98,6 +106,11 @@ class Dialogue(RemdisModule):
         while True:
             # IUを受信して保存
             input_iu = self.input_iu_buffer.get()
+
+            # 開始合図待ちの場合は何も返さない
+            if self.waiting_for_keyword:
+                continue
+            
             iu_memory.append(input_iu)
             
             # IUがREVOKEだった場合はメモリから削除
@@ -254,6 +267,10 @@ class Dialogue(RemdisModule):
 
     # バックチャネルを送信
     def send_backchannel(self):
+        # 開始合図待ちの場合は何も返さない
+        if self.waiting_for_keyword:
+            self.log("waiting_for_keyword=Trueのためバックチャネル送信せず")
+            return
         iu = self.bc_iu_buffer.get()
 
         # 現在の状態がidleの場合のみ後続の処理を実行してバックチャネルを送信
@@ -276,6 +293,15 @@ class Dialogue(RemdisModule):
     # 音声認識結果受信用のコールバック
     def callback_asr(self, ch, method, properties, in_msg):
         in_msg = self.parse_msg(in_msg)
+        # 開始合図認識
+        if self.waiting_for_keyword:
+            utterance = in_msg.get('body', '')
+            if isinstance(utterance, str) and 'どんなニュースがある' in utterance:
+                self.waiting_for_keyword = False
+                self.log(f"開始合図を認識: waiting_for_keyword={self.waiting_for_keyword}")
+            else:
+                self.log(f"waiting_for_keyword={self.waiting_for_keyword} (合図待ち)")
+                return  # 合図待ち中は何も返さない
         self.input_iu_buffer.put(in_msg)
             
     # 音声合成結果受信用のコールバック
@@ -311,6 +337,7 @@ class Dialogue(RemdisModule):
     # デバッグ用にログを出力
     def log(self, *args, **kwargs):
         print(f"[{time.time():.5f}]", *args, flush=True, **kwargs)
+        print(f"waiting_for_keyword={getattr(self, 'waiting_for_keyword', None)}", flush=True)
 
 def main():
     dialogue = Dialogue()
