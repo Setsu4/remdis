@@ -7,6 +7,7 @@ import re
 from base import RemdisModule, RemdisState, RemdisUtil, RemdisUpdateType
 from llm import ResponseChatGPT
 import prompt.util as prompt_util
+from news_summary import NewsSummaryGenerator
 
 
 class Dialogue(RemdisModule):
@@ -40,11 +41,31 @@ class Dialogue(RemdisModule):
         # IU処理用の関数
         self.util_func = RemdisUtil()
         # ニュース伝達開始合図待ちフラグ
-        self.waiting_for_keyword = True
+        self.waiting_for_keyword = True  # 初期状態では合図待ち
+        # システム発話リストとインデックス
+        self.system_utterance_list = []
+        self.system_utterance_index = 0
 
     # メインループ
     def run(self):
-        # システム起動時に準備完了メッセージを発話
+        self.is_summary_ready = False
+        def summary_worker():
+            self.news_summary_generator.generate_summary()
+            self.is_summary_ready = True
+
+        self.news_summary_generator = NewsSummaryGenerator(self.config)
+        summary_thread = threading.Thread(target=summary_worker)
+        summary_thread.start()
+
+        # 要約が完了するまで準備中メッセージを発話
+        while not self.is_summary_ready:
+            self.publish(self.createIU(
+                "対話の準備中です",
+                'dialogue', RemdisUpdateType.ADD), 'dialogue')
+            time.sleep(2)
+        summary_thread.join()  # 念のため完全に完了を待つ
+        self.prepare_system_utterance()  # ←要約生成後に分割・保存
+        # 要約完了後に準備完了メッセージを発話
         self.log(f"waiting_for_keyword={self.waiting_for_keyword}")
         self.publish(self.createIU(
             "対話の準備が完了しました．対話の開始合図をお願いします．合図はどんなニュースがある，です．",
@@ -76,6 +97,9 @@ class Dialogue(RemdisModule):
         t6.start()
         t7.start()
         t8.start()
+
+    def _generate_news_summary(self):
+        self.news_summary_generator.generate_summary()
 
     # 音声認識結果受信用のコールバックを登録
     def listen_asr_loop(self):
@@ -202,6 +226,11 @@ class Dialogue(RemdisModule):
 
     # システム発話を送信
     def send_response(self):
+        # システム発話リストがセットされていれば順次発話
+        if self.system_utterance_list and self.system_utterance_index < len(self.system_utterance_list):
+            self.send_system_utterance()
+            return
+
         if self.llm_buffer.empty():
             # 一瞬スリープしてそれでも応答生成中にならなければシステムから発話を開始
             time.sleep(0.1)
@@ -293,17 +322,39 @@ class Dialogue(RemdisModule):
     # 音声認識結果受信用のコールバック
     def callback_asr(self, ch, method, properties, in_msg):
         in_msg = self.parse_msg(in_msg)
-        # 開始合図認識
-        if self.waiting_for_keyword:
+        # commit（確定）結果のみで合図判定
+        if self.waiting_for_keyword and in_msg.get('update_type') == RemdisUpdateType.COMMIT:
             utterance = in_msg.get('body', '')
-            if isinstance(utterance, str) and 'どんなニュースがある' in utterance:
+            utterance_str = str(utterance).strip()
+            self.log(f"[DEBUG] 合図判定用 utterance: '{utterance_str}' (update_type={in_msg.get('update_type')})")
+            if re.search(r'どんなニュースがある', utterance_str):
                 self.waiting_for_keyword = False
                 self.log(f"開始合図を認識: waiting_for_keyword={self.waiting_for_keyword}")
+                # System_utterance.txtを読み込みリスト化・インデックス初期化
+                import os
+                system_utt_path = os.path.join(os.path.dirname(__file__), '../news/System_utterance.txt')
+                with open(system_utt_path, encoding='utf-8') as f:
+                    self.system_utterance_list = [re.sub(r'^\[\d+\]', '', line).strip() for line in f if line.strip()]
+                self.system_utterance_index = 0
+                # 最初の発話を送信
+                self.send_system_utterance()
+                return
             else:
                 self.log(f"waiting_for_keyword={self.waiting_for_keyword} (合図待ち)")
                 return  # 合図待ち中は何も返さない
+        # それ以外は通常通りバッファに入れる
         self.input_iu_buffer.put(in_msg)
-            
+
+    def send_system_utterance(self):
+        # システム発話リストから現在のインデックスの文を発話
+        if self.system_utterance_index < len(self.system_utterance_list):
+            utt = self.system_utterance_list[self.system_utterance_index]
+            snd_iu = self.createIU(utt, 'dialogue', RemdisUpdateType.ADD)
+            self.printIU(snd_iu)
+            self.publish(snd_iu, 'dialogue')
+            self.output_iu_buffer.append(snd_iu)
+            self.system_utterance_index += 1
+
     # 音声合成結果受信用のコールバック
     def callback_tts(self, ch, method, properties, in_msg):
         in_msg = self.parse_msg(in_msg)
@@ -338,6 +389,23 @@ class Dialogue(RemdisModule):
     def log(self, *args, **kwargs):
         print(f"[{time.time():.5f}]", *args, flush=True, **kwargs)
         print(f"waiting_for_keyword={getattr(self, 'waiting_for_keyword', None)}", flush=True)
+
+    def prepare_system_utterance(self):
+        """
+        summary.txtの内容を「。」で分割し、各文に[1][2]...の番号を付けてSystem_utterance.txtに保存する
+        """
+        import os
+        summary_path = os.path.join(os.path.dirname(__file__), '../news/summary.txt')
+        system_utt_path = os.path.join(os.path.dirname(__file__), '../news/System_utterance.txt')
+        with open(summary_path, encoding='utf-8') as f:
+            summary = f.read().strip()
+        # 「。」で分割し、空要素を除去
+        sentences = [s for s in summary.split('。') if s.strip()]
+        # 番号を付けて整形
+        numbered = [f'[{i+1}]{sent.strip()}。' for i, sent in enumerate(sentences)]
+        with open(system_utt_path, 'w', encoding='utf-8') as f:
+            for line in numbered:
+                f.write(line + '\n')
 
 def main():
     dialogue = Dialogue()
