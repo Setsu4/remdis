@@ -1,0 +1,121 @@
+{
+  "main_1": {
+    "text": "国学院大学は史上6校目の大学駅伝3冠に王手をかけています。",
+    "confirmations": [
+      {
+        "text": "大学駅伝の『3冠』という意味をご存知ですか？",
+        "user_responses": {
+          "知っている": "main_2",
+          "知らない": "explain_3kan",
+          "曖昧": "explain_3kan"
+        }
+      }
+    ],
+    "subplans": []
+  },
+  "explain_3kan": {
+    "text": "『3冠』とは出雲駅伝・全日本大学駅伝・箱根駅伝の3大会をすべて制覇することです。",
+    "next": "main_2"
+  },
+  "main_2": {
+    "text": "国学院大は5時間25分26秒で6位となり、青山学院大学から5分25秒遅れています。",
+    "confirmations": [
+      {
+        "text": "『往路』『復路』という区切りをご存知ですか？",
+        "user_responses": {
+          "知っている": "main_3",
+          "知らない": "explain_wouro",
+          "曖昧": "explain_wouro"
+        }
+      }
+    ],
+    "subplans": [
+      {
+        "user_question": "5分25秒って大きな差なの？",
+        "answer": "復路で逆転できた例は過去に6回ありますが、最大でも2分14秒差です。今回の差は非常に大きいです。",
+        "return_to": "main_3"
+      },
+      {
+        "user_question": "青山学院大学のタイムは何秒なの？",
+        "answer": "青山学院大学は5時間30分51秒でした。",
+        "return_to": "main_3"
+      }
+    ]
+  },
+  "explain_wouro": {
+    "text": "往路は大会前半、復路は大会後半の区間のことです。",
+    "next": "main_3"
+  },
+  "main_3": {
+    "text": "国学院大が逆転するには各区間で1分以上詰めなければならず、厳しい状況です。",
+    "confirmations": [],
+    "subplans": []
+  },
+  "main_4": {
+    "text": "今大会は国学院大、青学大、駒大の三強と評されていました。",
+    "confirmations": [
+      {
+        "text": "『三強』という表現の意味はご存知ですか？",
+        "user_responses": {
+          "知っている": "main_5",
+          "知らない": "explain_3kyo",
+          "曖昧": "explain_3kyo"
+        }
+      }
+    ],
+    "subplans": [
+      {
+        "user_question": "駒大はどうなったの？",
+        "answer": "駒大は青学大から3分16秒差の4位で、逆転は難しい状況です。",
+        "return_to": "main_5"
+      }
+    ]
+  },
+  "explain_3kyo": {
+    "text": "『三強』とは、優勝候補とされる三つの大学を指す言葉です。",
+    "next": "main_5"
+  },
+  "main_5": {
+    "text": "SNSでは青学大の強さを称賛する声や、國學院や駒澤の遅れを残念がる声がありました。",
+    "confirmations": [
+      {
+        "text": "X（旧ツイッター）をご利用になったことはありますか？",
+        "user_responses": {
+          "ある": "main_6",
+          "ない": "explain_x",
+          "曖昧": "explain_x"
+        }
+      }
+    ],
+    "subplans": []
+  },
+  "explain_x": {
+    "text": "Xは旧ツイッターのことです。多くの人が意見を投稿しています。",
+    "next": "main_6"
+  },
+  "main_6": {
+    "text": "国学院大は1区で野中恒亨選手が区間6位と好スタートを切りました。",
+    "confirmations": [],
+    "subplans": []
+  },
+  "main_7": {
+    "text": "しかし2区で起用されたエース平林清澄選手は1時間6分38秒で区間8位となり、伸び悩みました。",
+    "confirmations": [],
+    "subplans": [
+      {
+        "user_question": "2区を走ったのは誰？",
+        "answer": "エースの平林清澄選手（4年・美方）です。",
+        "return_to": "main_8"
+      }
+    ]
+  },
+  "main_8": {
+    "text": "2区から5区にかけては青学大を下回り、国学院大は苦戦しました。",
+    "confirmations": [],
+    "subplans": []
+  },
+  "end": {
+    "text": "以上でニュースの説明は終了です。ありがとうございました。",
+    "next": null
+  }
+}

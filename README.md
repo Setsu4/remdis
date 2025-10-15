@@ -1,6 +1,29 @@
 ![image](https://github.com/user-attachments/assets/361b3e78-608c-423b-a4a7-e0b2f3e4c6f0)
 ![Color logo with background](https://github.com/remdis/remdis/assets/15374299/da5eb1c0-b3b4-4056-9c68-99448265e9a4)
 
+## News Orchestrator (仕様準拠の最小実装)
+
+サンプル発話計画 `prompt/plan_example.json` を用いた対話進行の最小実装を追加しました。
+
+- モジュール: `modules/news_orchestrator.py`
+- 送受信: ASR (`asr`) を購読、対話発話 (`dialogue`) を配信
+- 状態: INIT → PREPARE → READY → AWAIT_START_CUE → MAIN ↔ (CONFIRM/EXPLAIN/SUBPLAN) → END
+
+起動後の流れ:
+- 「システムリセット」で準備→計画読込→開始待機へ
+- 「今日のニュースは？」で主計画を読み上げ開始
+- 必要に応じて確認発話や副計画回答を挿入
+
+設定は `config/config.yaml` の以下キーで調整できます:
+```
+prepare_notice_interval_sec: 5
+confirm_min_gap_sentences: 2
+confirm_max_per_session: 6
+subplan_threshold: 0.75
+user_response_timeout_sec: 8
+sentence_interval_sec: 2
+```
+
 # Remdis: Realtime Multimodal Dialogue System Toolkit
 Remdisはテキスト・音声・マルチモーダル対話システム開発のためのプラットフォームです。
 このページでは、Remdisを利用するための必要な情報を提供します。
