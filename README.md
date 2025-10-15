@@ -14,6 +14,9 @@
 - 「今日のニュースは？」で主計画を読み上げ開始
 - 必要に応じて確認発話や副計画回答を挿入
 
+動作確認モード:
+- `config/config.yaml` の `DIALOGUE.dev_mode` を `true` にすると、開始キーワード「今日のニュースは」を待たずに、準備完了後に自動的に主計画を開始します（開発時の時間短縮用）。
+
 設定は `config/config.yaml` の以下キーで調整できます:
 ```
 prepare_notice_interval_sec: 5
@@ -204,6 +207,16 @@ RemdisではRabbitMQの実行にDockerを利用します。Audio VAPでGPUを利
   python tts.py
   python output.py
   ~~~
+
+ローカルでマイクを使わずに標準入力から対話を試したい場合（簡易ASR）:
+~~~
+# まず RabbitMQ と他の必要なIM（例: dialogue.py, tout.py など）を起動
+# その後、別ターミナルで stdin ASR を起動します:
+python modules/stdin_asr.py
+
+# 入力した行が ASR の ADD + COMMIT IU として送出されます。
+# 終了は `exit` を入力してください。
+~~~
 
 ### MMDAgent-EXを用いたエージェント対話
 - RabbitMQサーバを実行

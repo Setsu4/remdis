@@ -38,6 +38,8 @@ class Orchestrator(RemdisModule):
         self.sentence_interval_sec = self.config.get('sentence_interval_sec', 2)
         # 新設定: post_tts_wait_sec（なければ sentence_interval_sec を流用）
         self.post_tts_wait_sec = self.config.get('post_tts_wait_sec', self.sentence_interval_sec)
+        # 動作確認モード: 開発時に開始キーワード待ちをスキップする
+        self.dev_mode = bool(self.config.get('DIALOGUE', {}).get('dev_mode', False))
 
         # Plan and controllers
         self.plan_store = PlanStore()
@@ -69,7 +71,14 @@ class Orchestrator(RemdisModule):
         self._transition('PREPARE')
         self._prepare()
         self._transition('READY')
-        self._transition('AWAIT_START_CUE')
+        # If dev_mode is enabled, skip AWAIT_START_CUE and start MAIN immediately
+        if self.dev_mode:
+            self._transition('MAIN')
+            self.current_node_id = self.plan_store.get_start_main_id()
+            if not self.current_node_id:
+                self._error_and_end("発話計画の開始位置が見つかりませんでした")
+        else:
+            self._transition('AWAIT_START_CUE')
 
         while self._running:
             if self._check_reset():
