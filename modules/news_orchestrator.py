@@ -40,6 +40,8 @@ class Orchestrator(RemdisModule):
         self.post_tts_wait_sec = self.config.get('post_tts_wait_sec', self.sentence_interval_sec)
         # 動作確認モード: 開発時に開始キーワード待ちをスキップする
         self.dev_mode = bool(self.config.get('DIALOGUE', {}).get('dev_mode', False))
+        # 開発モード時のTTS COMMIT後の遅延秒（任意）
+        self.dev_tts_delay_sec = float(self.config.get('DIALOGUE', {}).get('dev_tts_delay_sec', self.post_tts_wait_sec))
 
         # Plan and controllers
         self.plan_store = PlanStore()
@@ -59,6 +61,12 @@ class Orchestrator(RemdisModule):
         self._asr_queue = queue.Queue()
         self._running = True
         self._tts_commit_event = threading.Event()
+        # Event indicating TTS is ready to accept a new sentence.
+        # Set when no utterance is being synthesized; cleared when we send a new sentence.
+        self._tts_ready = threading.Event()
+        self._tts_ready.set()
+        # Lock to ensure only one sentence is sent to TTS at a time
+        self._tts_lock = threading.Lock()
         # Whether we've already announced the prepare-notice in AWAIT_START_CUE
         self._prepare_notice_sent = False
 
@@ -216,7 +224,36 @@ class Orchestrator(RemdisModule):
     def callback_tts(self, ch, method, properties, in_msg):
         iu = self.parse_msg(in_msg)
         if iu.get('update_type') == RemdisUpdateType.COMMIT:
+            # Signal that TTS finished the current utterance
             self._tts_commit_event.set()
+            # Mark TTS as ready to accept the next sentence.
+            # In dev_mode, delay the readiness by dev_tts_delay_sec to allow
+            # an artificial pause between sentences for testing.
+            def _delayed_set():
+                try:
+                    time.sleep(float(self.dev_tts_delay_sec))
+                except Exception:
+                    pass
+                try:
+                    self._tts_ready.set()
+                except Exception:
+                    pass
+
+            if getattr(self, 'dev_mode', False):
+                t = threading.Thread(target=_delayed_set, daemon=True)
+                t.start()
+            else:
+                try:
+                    self._tts_ready.set()
+                except Exception:
+                    pass
+
+            # Ensure the TTS lock is released so waiting _say() callers can proceed.
+            try:
+                if self._tts_lock.locked():
+                    self._tts_lock.release()
+            except Exception:
+                pass
 
     def _wait_asr(self, timeout: float) -> Optional[str]:
         try:
@@ -315,6 +352,24 @@ class Orchestrator(RemdisModule):
     def _say(self, text: str):
         if not text:
             return
+        # Acquire lock so concurrent callers will block until this utterance completes
+        try:
+            self._tts_lock.acquire()
+        except Exception:
+            pass
+
+        # Wait until TTS is ready to accept a new sentence
+        try:
+            self._tts_ready.wait()
+        except Exception:
+            pass
+
+        # Mark TTS as busy for this sentence
+        try:
+            self._tts_ready.clear()
+        except Exception:
+            pass
+
         iu = self.createIU(text, 'dialogue', RemdisUpdateType.ADD)
         self.printIU(iu)
         self.publish(iu, 'dialogue')
