@@ -2,6 +2,8 @@ import os
 import queue
 import threading
 import time
+import sys
+import traceback
 from typing import Optional, Dict, Any
 
 from base import RemdisModule, RemdisUpdateType
@@ -41,7 +43,18 @@ class Orchestrator(RemdisModule):
         # 動作確認モード: 開発時に開始キーワード待ちをスキップする
         self.dev_mode = bool(self.config.get('DIALOGUE', {}).get('dev_mode', False))
         # 開発モード時のTTS COMMIT後の遅延秒（任意）
-        self.dev_tts_delay_sec = float(self.config.get('DIALOGUE', {}).get('dev_tts_delay_sec', self.post_tts_wait_sec))
+        # Default to 0.0 so that no artificial dev delay is applied unless
+        # explicitly configured.
+        self.dev_tts_delay_sec = float(self.config.get('DIALOGUE', {}).get('dev_tts_delay_sec', 0.0))
+
+        # If not running in dev_mode, disable the post-TTS artificial pause
+        # so normal dialogue proceeds without the extra delay used for
+        # development testing.
+        if not self.dev_mode:
+            try:
+                self.post_tts_wait_sec = 0.0
+            except Exception:
+                pass
 
         # Plan and controllers
         self.plan_store = PlanStore()
@@ -61,6 +74,10 @@ class Orchestrator(RemdisModule):
         self._asr_queue = queue.Queue()
         self._running = True
         self._tts_commit_event = threading.Event()
+        # Timestamp of the most recent TTS COMMIT received (time.time()).
+        # Used to distinguish stale COMMITs from commits that correspond to
+        # the sentence we're currently waiting for.
+        self._last_tts_commit_time = 0.0
         # Event indicating TTS is ready to accept a new sentence.
         # Set when no utterance is being synthesized; cleared when we send a new sentence.
         self._tts_ready = threading.Event()
@@ -74,6 +91,12 @@ class Orchestrator(RemdisModule):
     def run(self):
         threading.Thread(target=self.listen_asr_loop, daemon=True).start()
         threading.Thread(target=self.listen_tts_loop, daemon=True).start()
+
+        try:
+            # Diagnostic: print the id of the ASR queue and main thread name at startup
+            print(f"[{time.time():.6f}] [DIAG] session={self.session_id} asr_queue_id={id(self._asr_queue)} main_thread={threading.current_thread().name}", file=sys.stderr)
+        except Exception:
+            pass
 
         # Prepare
         self._transition('PREPARE')
@@ -132,12 +155,51 @@ class Orchestrator(RemdisModule):
                     self._error_and_end("データ参照に不整合がありました")
                     break
 
-                # Speak main sentence
+                # Speak main sentence with interruption handling.
                 text = node.get('text', '')
                 if text:
+                    # Send the ADD for the sentence
                     self._say(text)
-                self._commit()
-                self._wait_tts_gap()
+                    # Send COMMIT to start playback
+                    self._commit()
+                    # Wait for either normal TTS finish or an interrupting ASR
+                    interrupt_text = self._wait_for_tts_or_interrupt(timeout=None)
+                    if interrupt_text:
+                        # Handle interrupt: attempt to answer via subplan and then re-say
+                        handled = self._handle_interruption_during_tts(interrupt_text, self.current_node_id)
+                        if handled:
+                            # Re-send the same sentence after handling
+                            # Only re-send if the node still points to same content
+                            # (the handler may update current_node_id to return_to)
+                            if text:
+                                self._say(text)
+                                self._commit()
+                                # Wait interruptibly for the re-sent sentence so
+                                # users can interrupt it again. If interrupted,
+                                # handle and re-send until no more interrupts.
+                                while True:
+                                    extra_interrupt = self._wait_for_tts_or_interrupt(timeout=None)
+                                    if extra_interrupt:
+                                        try:
+                                            # Handle the nested interruption (may play subplan)
+                                            self._handle_interruption_during_tts(extra_interrupt, self.current_node_id)
+                                            # After handling, re-send the original sentence again
+                                            self._say(text)
+                                            self._commit()
+                                            continue
+                                        except Exception:
+                                            # If handler fails, break and proceed
+                                            break
+                                    # no more interrupts during re-sent sentence
+                                    break
+                                # After re-sending and handling nested interrupts,
+                                # fall through to the normal post-speech logic so
+                                # that confirmations for the current node are
+                                # evaluated. Do NOT auto-advance the current node here.
+                    else:
+                        # No interrupt, normal finish
+                        self._wait_tts_gap()
+                        self.confirm_ctrl.tick_sentence()
                 self.confirm_ctrl.tick_sentence()
 
                 # Maybe insert confirmation
@@ -202,6 +264,10 @@ class Orchestrator(RemdisModule):
 
     # --------------- listen / ASR handling ---------------
     def listen_asr_loop(self):
+        try:
+            print(f"[{time.time():.6f}] [DIAG] listen_asr_loop thread={threading.current_thread().name} starting subscribe('asr')", file=sys.stderr)
+        except Exception:
+            pass
         self.subscribe('asr', self.callback_asr)
 
     def listen_tts_loop(self):
@@ -219,12 +285,42 @@ class Orchestrator(RemdisModule):
             text = ''.join(self._iu_buffer).strip()
             self._iu_buffer = []
             if text:
+                try:
+                    # Trace that Orchestrator enqueued ASR text (with timestamp)
+                    qsize_before = None
+                    try:
+                        qsize_before = self._asr_queue.qsize()
+                    except Exception:
+                        pass
+                    print(f"[{time.time():.6f}] [ASR-QUEUE] session={self.session_id} enqueuing ASR text: '{text}' asr_queue_id={id(self._asr_queue)} thread={threading.current_thread().name} qsize_before={qsize_before}", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
                 self._asr_queue.put(text)
+                try:
+                    qsize_after = None
+                    try:
+                        qsize_after = self._asr_queue.qsize()
+                    except Exception:
+                        pass
+                    print(f"[{time.time():.6f}] [ASR-QUEUE] session={self.session_id} after_put qsize_after={qsize_after}", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
 
     def callback_tts(self, ch, method, properties, in_msg):
         iu = self.parse_msg(in_msg)
         if iu.get('update_type') == RemdisUpdateType.COMMIT:
+            try:
+                # Log arrival time of TTS COMMIT for timing analysis
+                print(f"[{time.time():.6f}] [TTS-COMMIT] session={self.session_id} received TTS COMMIT (id={iu.get('id')})", file=sys.stderr)
+            except Exception:
+                pass
             # Signal that TTS finished the current utterance
+            # Record the commit time so waiters can determine whether this
+            # COMMIT belongs to the current wait session.
+            try:
+                self._last_tts_commit_time = time.time()
+            except Exception:
+                self._last_tts_commit_time = time.time()
             self._tts_commit_event.set()
             # Mark TTS as ready to accept the next sentence.
             # In dev_mode, delay the readiness by dev_tts_delay_sec to allow
@@ -393,6 +489,222 @@ class Orchestrator(RemdisModule):
             self._pause_after_tts()
         except Exception:
             self._pause_after_tts()
+
+    # Send a REVOKE IU on the dialogue exchange to request TTS to stop current playback
+    def _send_dialogue_revoke(self):
+        try:
+            # Visible runtime trace for debugging: indicate we intend to send a REVOKE
+            try:
+                # Timestamped trace for diagnostic ordering
+                print(f"[{time.time():.6f}] [REVOKE] session={self.session_id} node={self.current_node_id} sending dialogue REVOKE", file=sys.stderr)
+            except Exception:
+                # best-effort; don't fail revoke path if logging fails
+                pass
+
+            snd_iu = self.createIU('', 'dialogue', RemdisUpdateType.REVOKE)
+            # printIU will emit the IU to stdout/stderr per Remdis conventions
+            self.printIU(snd_iu)
+            self.publish(snd_iu, 'dialogue')
+
+            try:
+                print(f"[{time.time():.6f}] [REVOKE] published dialogue REVOKE id={snd_iu.get('id')}", file=sys.stderr)
+            except Exception:
+                pass
+        except Exception:
+            # Surface unexpected errors to stderr to avoid silent failures
+            try:
+                print('[REVOKE] exception while sending dialogue REVOKE', file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+            except Exception:
+                pass
+
+    # Wait for either TTS COMMIT or an incoming ASR (interrupt). If an ASR is received
+    # while waiting, return the text (str). If TTS finishes normally, return None.
+    def _wait_for_tts_or_interrupt(self, timeout: Optional[float] = None) -> Optional[str]:
+        start = time.time()
+        try:
+            # Mark when we start waiting so we can see how long wait loops run
+            print(f"[{time.time():.6f}] [WAIT-ENTER] session={self.session_id} waiting for TTS or ASR (timeout={timeout})", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        while True:
+            try:
+                print(f"[{time.time():.6f}] [WAIT-ITER] session={self.session_id}", file=sys.stderr, flush=True)
+            except Exception:
+                pass
+            # Check if tts finished
+            try:
+                if self._tts_commit_event.wait(timeout=0.1):
+                    # Only treat this COMMIT as relevant if it occurred after
+                    # we started waiting in this session. This avoids reacting
+                    # to stale commit events from previous sentences.
+                    if self._last_tts_commit_time and self._last_tts_commit_time < start:
+                        try:
+                            print(f"[{time.time():.6f}] [WAIT-IGNORED-STALE-COMMIT] session={self.session_id} commit_time={self._last_tts_commit_time} wait_start={start}", file=sys.stderr, flush=True)
+                        except Exception:
+                            pass
+                        # clear the event and continue waiting
+                        self._tts_commit_event.clear()
+                        continue
+                    self._tts_commit_event.clear()
+                    # Before declaring normal finish, do several short blocking
+                    # checks of the ASR queue to catch near-simultaneous user input.
+                    try:
+                        txt_after = None
+                        attempts = 3
+                        attempt_timeout = 0.05
+                        for ai in range(attempts):
+                            try:
+                                try:
+                                    qsz = self._asr_queue.qsize()
+                                except Exception:
+                                    qsz = None
+                                print(f"[{time.time():.6f}] [WAIT-POST-TTS-CHECK] session={self.session_id} attempt={ai+1}/{attempts} about to blocking-get(timeout={attempt_timeout}) asr_queue_id={id(self._asr_queue)} thread={threading.current_thread().name} qsize_before={qsz}", file=sys.stderr, flush=True)
+                            except Exception:
+                                pass
+                            try:
+                                txt_after = self._asr_queue.get(timeout=attempt_timeout)
+                                break
+                            except queue.Empty:
+                                txt_after = None
+                                continue
+                            except Exception as e:
+                                try:
+                                    print(f"[{time.time():.6f}] [WAIT-POST-TTS-CHECK-EXC] session={self.session_id} get exception: {e}", file=sys.stderr, flush=True)
+                                    traceback.print_exc(file=sys.stderr)
+                                except Exception:
+                                    pass
+                                txt_after = None
+                                break
+
+                        # If still nothing, fall back to a non-blocking check once
+                        if not txt_after:
+                            try:
+                                try:
+                                    qsz2 = self._asr_queue.qsize()
+                                except Exception:
+                                    qsz2 = None
+                                print(f"[{time.time():.6f}] [WAIT-POST-TTS-CHECK] no ASR after {attempts} attempts, trying get_nowait asr_queue_id={id(self._asr_queue)} thread={threading.current_thread().name} qsize_now={qsz2}", file=sys.stderr, flush=True)
+                            except Exception:
+                                pass
+                            try:
+                                txt_after = self._asr_queue.get_nowait()
+                            except Exception:
+                                txt_after = None
+
+                        if txt_after:
+                            try:
+                                print(f"[{time.time():.6f}] [ASR-DETECT-AFTER-TTS] session={self.session_id} detected ASR immediately after TTS COMMIT: '{txt_after}'", file=sys.stderr, flush=True)
+                            except Exception:
+                                pass
+                            if 'システムリセット' in txt_after:
+                                try:
+                                    self._asr_queue.put(txt_after)
+                                except Exception:
+                                    pass
+                                return None
+                            return txt_after
+                    except Exception:
+                        # any unexpected error should not prevent normal finish
+                        pass
+                    # normal finish
+                    return None
+            except Exception as e:
+                try:
+                    print(f"[{time.time():.6f}] [WAIT-LOOP-EXC] session={self.session_id} exception: {e}", file=sys.stderr, flush=True)
+                    traceback.print_exc(file=sys.stderr)
+                except Exception:
+                    pass
+
+            # Check for ASR input (user interruption)
+            try:
+                try:
+                    qsize = self._asr_queue.qsize()
+                    print(f"[{time.time():.6f}] [WAIT-LOOP] session={self.session_id} asr_queue_size={qsize}", file=sys.stderr, flush=True)
+                except Exception:
+                    qsize = None
+                try:
+                    print(f"[{time.time():.6f}] [WAIT-LOOP-CHECK] session={self.session_id} about to short-block-get(timeout=0.02) asr_queue_id={id(self._asr_queue)} thread={threading.current_thread().name} qsize={qsize}", file=sys.stderr, flush=True)
+                except Exception:
+                    pass
+                try:
+                    # Short blocking get reduces tight busy-looping and reduces
+                    # races where another thread hasn't yet scheduled the put().
+                    txt = self._asr_queue.get(timeout=0.02)
+                except Exception as e:
+                    # Empty is expected; suppress noisy traceback for normal case
+                    if isinstance(e, queue.Empty):
+                        txt = None
+                    else:
+                        try:
+                            print(f"[{time.time():.6f}] [WAIT-GET-EXC] session={self.session_id} get exception: {e}", file=sys.stderr, flush=True)
+                            traceback.print_exc(file=sys.stderr)
+                        except Exception:
+                            pass
+                        txt = None
+                if txt:
+                    try:
+                        print(f"[{time.time():.6f}] [ASR-DETECT] session={self.session_id} detected ASR while waiting: '{txt}'", file=sys.stderr, flush=True)
+                    except Exception:
+                        pass
+                    # If it's a reset command, put it back for outer loop handling
+                    if 'システムリセット' in txt:
+                        try:
+                            self._asr_queue.put(txt)
+                        except Exception:
+                            pass
+                        return None
+                    return txt
+            except Exception:
+                pass
+
+            # Timeout handling
+            if timeout is not None and (time.time() - start) >= timeout:
+                return None
+
+    # Handle an interruption utterance that arrived during a system utterance.
+    # This will request TTS to stop, attempt to answer the user's question (subplan
+    # matching), and keep track so the caller can re-say the original utterance.
+    def _handle_interruption_during_tts(self, user_text: str, current_node_id: str) -> bool:
+        try:
+            # Ask TTS to stop immediately
+            self._send_dialogue_revoke()
+            # Special-case: user asks "なんて言った" -> reply with the subject
+            # We accept common variants including kanji/kanakana
+            if isinstance(user_text, str):
+                ut = user_text.strip()
+                if any(k in ut for k in ['なんて言った', '何て言った', 'なんていった', '何ていった']):
+                    # Reply succinctly with the subject of the current sentence
+                    self._say("国学院大学です")
+                    self._commit()
+                    self._wait_tts_gap()
+                    # Keep dialog state in MAIN so original sentence can be re-sent
+                    self._transition('MAIN')
+                    return True
+
+            # Try to match subplans for the current node
+            subplans = self.plan_store.get_subplans(current_node_id) if current_node_id else []
+            if subplans:
+                match = best_subplan_match(user_text, subplans, self.subplan_threshold)
+                if match:
+                    sp, _ = match
+                    self._transition('SUBPLAN')
+                    self._say(sp.get('answer', ''))
+                    self._commit()
+                    # Wait for the answer to finish normally (no nested interruption handling)
+                    self._wait_tts_gap()
+                    # Return to MAIN. Do NOT change current_node_id here so that the
+                    # original sentence can be re-sent and progression continues as before.
+                    self._transition('MAIN')
+                    return True
+
+            # No matching subplan: give a short fallback response
+            self._say("その質問には簡単にはお答えできません。説明に戻ります。")
+            self._commit()
+            self._wait_tts_gap()
+            return True
+        except Exception:
+            return False
 
     def _error_and_end(self, message: str):
         self._say(message)

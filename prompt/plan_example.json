@@ -11,7 +11,13 @@
         }
       }
     ],
-    "subplans": []
+    "subplans": [
+      {
+        "user_question": "なんて言った",
+        "answer": "国学院大学です",
+        "return_to": "main_1"
+      }
+    ]
   },
   "explain_3kan": {
     "text": "『3冠』とは出雲駅伝・全日本大学駅伝・箱根駅伝の3大会をすべて制覇することです。",
@@ -33,12 +39,12 @@
       {
         "user_question": "5分25秒って大きな差なの？",
         "answer": "復路で逆転できた例は過去に6回ありますが、最大でも2分14秒差です。今回の差は非常に大きいです。",
-        "return_to": "main_3"
+        "return_to": "main_2"
       },
       {
         "user_question": "青山学院大学のタイムは何秒なの？",
         "answer": "青山学院大学は5時間30分51秒でした。",
-        "return_to": "main_3"
+        "return_to": "main_2"
       }
     ]
   },
