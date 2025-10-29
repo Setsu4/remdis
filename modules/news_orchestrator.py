@@ -448,6 +448,20 @@ class Orchestrator(RemdisModule):
     def _say(self, text: str):
         if not text:
             return
+        # Before starting a new utterance, clear any stale TTS commit event
+        # and reset the last-commit timestamp so the waiting routine will
+        # treat the subsequent COMMIT as belonging to this new utterance.
+        try:
+            self._tts_commit_event.clear()
+        except Exception:
+            pass
+        try:
+            # resetting to 0.0 ensures comparisons in _wait_for_tts_or_interrupt
+            # won't treat an older commit as relevant to the new wait session.
+            self._last_tts_commit_time = 0.0
+        except Exception:
+            pass
+
         # Acquire lock so concurrent callers will block until this utterance completes
         try:
             self._tts_lock.acquire()
@@ -471,6 +485,16 @@ class Orchestrator(RemdisModule):
         self.publish(iu, 'dialogue')
 
     def _commit(self):
+        # Clear any stale TTS commit event before issuing a new COMMIT IU
+        try:
+            self._tts_commit_event.clear()
+        except Exception:
+            pass
+        try:
+            self._last_tts_commit_time = 0.0
+        except Exception:
+            pass
+
         iu = self.createIU('', 'dialogue', RemdisUpdateType.COMMIT)
         self.printIU(iu)
         self.publish(iu, 'dialogue')
@@ -528,6 +552,29 @@ class Orchestrator(RemdisModule):
         except Exception:
             pass
         while True:
+            # Quick non-blocking check for ASR that may have arrived just before
+            # entering the main wait logic. This ensures we don't miss user
+            # interruptions that occurred immediately after sending the IU.
+            try:
+                try:
+                    pre_txt = self._asr_queue.get_nowait()
+                except Exception:
+                    pre_txt = None
+                if pre_txt:
+                    try:
+                        print(f"[{time.time():.6f}] [ASR-DETECT-PRE] session={self.session_id} detected ASR before waiting: '{pre_txt}'", file=sys.stderr, flush=True)
+                    except Exception:
+                        pass
+                    if 'システムリセット' in pre_txt:
+                        try:
+                            self._asr_queue.put(pre_txt)
+                        except Exception:
+                            pass
+                        return None
+                    return pre_txt
+            except Exception:
+                pass
+
             try:
                 print(f"[{time.time():.6f}] [WAIT-ITER] session={self.session_id}", file=sys.stderr, flush=True)
             except Exception:
@@ -669,6 +716,16 @@ class Orchestrator(RemdisModule):
         try:
             # Ask TTS to stop immediately
             self._send_dialogue_revoke()
+            # Wait briefly for TTS to acknowledge the REVOKE by sending a
+            # TTS COMMIT. If we don't wait, we may start producing a reply
+            # while the previous audio is still being streamed which leads
+            # to overlapping / continued playback. Use a modest timeout so
+            # we don't block the dialog flow for too long.
+            try:
+                self._wait_for_tts_stop(timeout=1.0)
+            except Exception:
+                # best-effort: continue even if wait fails
+                pass
             # Special-case: user asks "なんて言った" -> reply with the subject
             # We accept common variants including kanji/kanakana
             if isinstance(user_text, str):
@@ -703,6 +760,31 @@ class Orchestrator(RemdisModule):
             self._commit()
             self._wait_tts_gap()
             return True
+        except Exception:
+            return False
+
+    # Wait for TTS to acknowledge a stop via receiving a TTS COMMIT.
+    # Returns True if a commit was observed within the timeout, False otherwise.
+    def _wait_for_tts_stop(self, timeout: float = 1.0) -> bool:
+        start = time.time()
+        try:
+            # If TTS already signalled commit recently, consider it stopped.
+            if self._tts_commit_event.is_set():
+                try:
+                    self._tts_commit_event.clear()
+                except Exception:
+                    pass
+                return True
+            # Wait in short intervals so we remain responsive to other events
+            while (time.time() - start) < timeout:
+                # wait with a small timeout so we can loop and remain responsive
+                if self._tts_commit_event.wait(timeout=0.05):
+                    try:
+                        self._tts_commit_event.clear()
+                    except Exception:
+                        pass
+                    return True
+            return False
         except Exception:
             return False
 
