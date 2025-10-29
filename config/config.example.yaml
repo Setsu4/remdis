@@ -1,0 +1,6 @@
+# Example configuration
+# Copy this file to config/config.yaml and fill in real values.
+# DO NOT commit the real config/config.yaml to the repository.
+
+openai_api_key: "YOUR_OPENAI_API_KEY_GOES_HERE"
+other_setting: "value"

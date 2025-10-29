@@ -1,1 +1,3 @@
 models/vap/sw2japanese_public0.ckpt
+config/config.yaml
+*.secret
