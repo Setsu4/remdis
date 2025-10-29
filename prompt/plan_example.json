@@ -14,7 +14,7 @@
     "subplans": [
       {
         "user_question": "なんて言った",
-        "answer": "国学院大学でっす",
+        "answer": "国学院大学です",
         "return_to": "main_1"
       }
     ]
